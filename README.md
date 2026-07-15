@@ -4,6 +4,15 @@
 
 Pipeline nghiên cứu đánh giá liệu các kịch bản can thiệp HR có thể làm **attrition score** của mô hình giảm xuống dưới ngưỡng high-risk hay không trên bộ IBM HR Analytics Employee Attrition & Performance.
 
+## Tài liệu chính
+
+- Paper hoàn chỉnh: [`Paper.pdf`](Paper.pdf)
+- Mã nguồn LaTeX của paper: [`main.tex`](main.tex)
+- Research novelty statement: [`CoverLetter.pdf`](CoverLetter.pdf)
+- Slide thuyết trình: [`slides/hr-counterfactual-feasibility-audit.pptx`](slides/hr-counterfactual-feasibility-audit.pptx)
+
+Dataset gốc và các artifact sinh tự động không được lưu trong repository. Chúng được tạo lại theo hướng dẫn bên dưới và được loại khỏi Git bằng `.gitignore`.
+
 ## Cài đặt và chạy
 
 Các artifact nộp kèm đã được kiểm tra bằng **Python 3.14.3** và bộ phiên bản khóa trong `requirements-lock.txt`. Để tái tạo đúng môi trường đã kiểm tra:
@@ -67,7 +76,7 @@ latexmk -pdf main.tex
 
 Paper sử dụng trực tiếp các hình trong `outputs/figures`, vì vậy nên chạy pipeline trước khi build LaTeX.
 
-Slide thuyết trình được lưu tại `slides/hr-counterfactual-feasibility-audit.pptx`.
+Slide thuyết trình được lưu tại [`slides/hr-counterfactual-feasibility-audit.pptx`](slides/hr-counterfactual-feasibility-audit.pptx).
 
 ## Pipeline
 
