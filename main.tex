@@ -1,0 +1,423 @@
+\documentclass[11pt]{article}
+\usepackage{iftex}
+\ifPDFTeX
+  \usepackage[utf8]{inputenc}
+\fi
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[a4paper,margin=2.5cm]{geometry}
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{amsmath}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{placeins}
+\usepackage{hyperref}
+\usepackage{url}
+\hypersetup{colorlinks=true,linkcolor=blue!55!black,citecolor=blue!55!black,
+  urlcolor=blue!65!black,
+  pdftitle={Are Counterfactual HR Intervention Scenarios Feasible? A Pilot Audit of Employees with High Predicted Attrition Risk}}
+\graphicspath{{outputs/figures/}}
+\captionsetup{font=small,labelfont=bf}
+\setlist{nosep}
+\setlist[itemize,enumerate]{leftmargin=*}
+\setlength{\parindent}{1.2em}
+\setlength{\parskip}{0.25em}
+
+\title{\textbf{Are Counterfactual HR Intervention Scenarios Feasible?\\A Pilot Audit of Employees with High Predicted Attrition Risk}}
+\author{Nguyen Tien Khoa\\
+Student ID: 250104039\\
+Research on Data Analysis -- IS6502.CH201}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Employee attrition models can identify employees with elevated predicted risk, but they do not show whether score-reducing counterfactuals correspond to interventions that HR can reasonably evaluate. This pilot study audited the feasibility of counterfactual scenarios for employees classified as high-risk in the synthetic IBM HR Analytics Employee Attrition and Performance dataset. We compared class-weighted logistic regression, random forest, and XGBoost under a stratified train--validation--test design, selected the model and threshold on validation data, and combined SHAP, diagnostic DiCE searches, and an exhaustive grid over monthly income, stock-option level, and overtime. Logistic regression achieved a validation average precision of 0.573 and a test average precision of 0.587. At the validation-selected threshold of 0.37, it flagged 117 of 294 test employees and captured 37 of the 47 observed leavers (precision 0.316; recall 0.787). DiCE found model-valid diagnostic recourse for all 117 employees, whereas only 73 (62.4\%) had a scenario that crossed the threshold and passed the encoded HR rules; the remaining 44 (37.6\%) had no feasible scenario within the bounded intervention space. Feasibility changed little across salary-cap percentiles but fell to 35.9\% when overtime changes were prohibited. These findings reveal a measurable gap between computational recourse and rule-based HR feasibility; because the data are synthetic and cross-sectional, they audit model behavior rather than establish causal retention effects or support automated HR decisions.
+\end{abstract}
+
+\noindent\textbf{Keywords:} employee attrition; counterfactual explanation; algorithmic recourse; HR analytics; SHAP; feasibility audit; explainable AI
+
+\section{Introduction}
+Employee turnover can impose recruitment, onboarding, knowledge-transfer, and operational costs. Machine-learning models have therefore been explored as tools for identifying employees with elevated attrition risk \cite{artelt2023,mohiuddin2023}. However, a prediction answers only who appears to be at risk. Once an employee is flagged, a more decision-relevant question is whether the organization has any reasonable action available within the model's logic.
+
+Counterfactual explanation provides a natural way to study this question. A counterfactual describes a modified employee profile that changes the model output from high-risk to low-risk \cite{mothilal2020,karimi2022}. Yet model validity is not equivalent to actionability. An unconstrained algorithm may lower a score by changing age, gender, work history, tenure, or a satisfaction rating. Such a scenario may be mathematically successful but impossible, retrospective, ethically inappropriate, or not directly implementable by HR \cite{ustun2019,poyiadzi2020}.
+
+This study addresses the gap between predicted recourse and feasible intervention. It develops a reproducible pipeline that predicts attrition risk, generates counterfactual scenarios at three constraint levels, audits them against explicit HR rules, and classifies each high-risk employee according to whether feasible recourse exists. The analysis is a feasibility assessment of model behavior rather than a recommendation system.
+
+The study addresses three research questions:
+\begin{enumerate}[label=\textbf{RQ\arabic*:}]
+  \item Can a model-valid scenario reduce each high-risk employee's attrition score below the operational threshold?
+  \item Does such a scenario modify only permitted HR levers and satisfy predefined feasibility constraints?
+  \item How sensitive is the estimated feasibility rate to the split and to assumptions about the risk threshold, salary cap, and overtime availability?
+\end{enumerate}
+The principal contribution is not a new classifier. It is an auditable bridge between prediction, explanation, counterfactual generation, and HR feasibility.
+
+The remainder of the paper reviews adjacent attrition and algorithmic-recourse research, describes the data and audit protocol, reports predictive and feasibility results, and discusses their relation to the research questions, prior work, and responsible HR use.
+
+\section{Related Work}
+Employee-attrition studies have primarily emphasized predictive performance and feature importance. Artelt and Gregoriades moved beyond prediction by generating diverse counterfactuals, applying feature blacklists and constraints, and aggregating them into retention-oriented recommendations \cite{artelt2023}. Their work establishes that constrained counterfactual analysis in employee attrition is not itself new. Feature attribution and intervention nevertheless answer different questions: SHAP explains which variables contributed to a prediction \cite{lundberg2017}, but it does not specify a valid, attainable action.
+
+Algorithmic recourse research formalizes the search for changes that produce a favorable model outcome \cite{ustun2019,karimi2022}. DiCE generates diverse counterfactuals and supports feature and range constraints \cite{mothilal2020}. FACE and related approaches emphasize that proximity is insufficient: scenarios should respect directionality and real-world actionability \cite{poyiadzi2020}. These concerns are especially important in HR, where algorithmic outputs can affect people and may reproduce unfair decision logic \cite{kochling2020,tambe2019}.
+
+More recent work further questions whether conventional distance-based recourse objectives correspond to actions that people would accept \cite{tominaga2024}. A directional intervention taxonomy has also been used to translate domain knowledge into per-query DiCE constraints, demonstrating the value of distinguishing immutable, monotonic, bidirectional, and conditional changes \cite{thieu2026}. In the employee-turnover domain, Lv et al. combine a graph-aware predictor, mutability-constrained counterfactuals, large-language-model strategy summarization, and sensitivity analysis \cite{lv2026}. Consequently, neither feasibility constraints nor sensitivity analysis alone constitutes the novelty claimed here.
+
+This study does not propose a new classifier, counterfactual generator, or general concept of constrained recourse. Its narrower contribution is a transparent employee-level audit design that quantifies how apparent recourse coverage changes from broad diagnostic search to a small, predeclared, exhaustively evaluated HR intervention grid. For every flagged employee, the output distinguishes model validity from encoded HR feasibility, preserves technical-failure semantics, records rejection reasons, applies a deterministic ranking rule, and reports split and assumption sensitivity. The contribution is therefore the integrated audit protocol and its coverage-loss evidence, rather than the direct translation of counterfactuals into retention recommendations.
+
+\section{Data and Methods}
+\subsection{Dataset and Data Quality}
+The analysis uses the IBM HR Analytics Employee Attrition and Performance dataset \cite{ibmdata}. It contains 1,470 synthetic employee records, 35 columns, and a binary target. The positive class comprises 237 employees (16.1\%). Checks found no missing cells, duplicate rows, duplicate employee identifiers, non-positive monthly incomes, or violations of encoded tenure relationships.
+
+EmployeeNumber was retained only as an identifier. EmployeeCount, StandardHours, and Over18 were constant and were excluded together with the identifier. The remaining 30 predictors were grouped according to HR meaning (Table~\ref{tab:featuregroups}).
+
+\begin{table}[htbp]
+\centering
+\caption{Feature groups used in the feasibility audit.}
+\label{tab:featuregroups}
+\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{3.0cm}>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}p{2.9cm}@{}}
+\toprule
+Group & Examples & Main treatment \\
+\midrule
+Immutable & Age, Gender, MaritalStatus & Locked \\
+Historical & Education, work history, tenure variables & Locked \\
+Perception and experience & JobSatisfaction, WorkLifeBalance & Diagnostic only \\
+Job structure and context & JobRole, JobLevel, Department, travel & Diagnostic only \\
+Directly actionable & MonthlyIncome, StockOptionLevel, OverTime & Allowed under Level 3 rules \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\FloatBarrier
+
+We divided records by stratified sampling into 60\% training, 20\% validation, and 20\% test subsets using seed 42. We learned all preprocessing parameters, model coefficients or structures, permitted ranges, stock-option bounds, and salary caps from training data. We used validation data for model and threshold selection. Test data remained untouched during those choices and were then used for primary evaluation, high-risk cohort definition, SHAP explanation, and downstream recourse analysis; supplementary sensitivity analyses did not alter the primary model or threshold.
+
+\begin{table}[htbp]
+\centering
+\caption{Primary stratified data split.}
+\label{tab:splits}
+\begin{tabular}{lrrr}
+\toprule
+Subset & Employees & Attrition cases & Attrition rate \\
+\midrule
+Training & 882 & 142 & 16.10\% \\
+Validation & 294 & 48 & 16.33\% \\
+Test & 294 & 47 & 15.99\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\FloatBarrier
+
+\subsection{Predictive Modeling and Threshold Selection}
+We mode-imputed and one-hot encoded categorical variables. We median-imputed numeric variables and additionally standardized them for logistic regression. We encapsulated transformations and estimators in scikit-learn pipelines to prevent leakage.
+
+We compared class-weighted logistic regression, a balanced random forest, and XGBoost with a training-derived positive-class weight. Fixed, pre-validation settings were: logistic regression with the liblinear solver and 2,000 maximum iterations; random forest with 400 trees and minimum leaf size two; and XGBoost with 250 trees, depth three, learning rate 0.04, and row and column subsampling of 0.9. Average precision (AP), the non-interpolated recall-increment-weighted summary of the precision--recall curve, was primary because accuracy can be misleading under class imbalance \cite{saito2015}. AP is not the trapezoidal area under a linearly interpolated precision--recall curve. The model with the highest validation AP was selected; ties after rounding AP to four decimal places favored logistic regression, then random forest, then XGBoost. For each model, validation precision, recall, F1, and F2 were reported at its own F2-optimal threshold.
+
+For the selected model, the operational threshold was chosen from 0.05 to 0.95 in steps of 0.01 by maximizing validation F2, giving recall greater weight than precision. Ties were resolved by recall, then precision, then the lower threshold. An employee was high-risk when score was greater than or equal to the threshold. Because no calibration was performed, \texttt{predict\_proba} outputs are called attrition scores, not calibrated probabilities.
+
+\subsection{Model Explanation with SHAP}
+We computed SHAP values on test data using an explainer appropriate to the selected estimator \cite{lundberg2017}. For the selected logistic-regression model, contributions are on the model's log-odds scale. We aggregated one-hot contributions to original features and then to five HR groups. Group importance is the sum of original-feature mean absolute SHAP values; it represents total attribution mass, is not normalized by the number of features in a group, and should not be read as an average per-feature effect. We aggregated signed local contributions by original feature for case studies. SHAP explains model logic and is not interpreted causally.
+
+\subsection{Counterfactual Search Spaces}
+We generated scenarios for every high-risk employee under three levels:
+\begin{itemize}[leftmargin=*,label={}]
+  \item \textbf{Level 1: broad.} DiCE could vary all model features within training-observed domains.
+  \item \textbf{Level 2: intermediate.} Immutable and historical variables were locked; perception, job-context, and directly actionable variables could vary.
+  \item \textbf{Level 3: main.} An exhaustive grid varied only MonthlyIncome, StockOptionLevel, and OverTime.
+\end{itemize}
+The three Level 3 levers were the only dataset fields that could be mapped to direct, directional HR decisions without treating personal attributes, employment history, job assignment, or perception scores as immediate actions. This was a bounded analytical choice, not a claim that these three levers exhaust real retention practice.
+
+Levels 1 and 2 were diagnostic and never eligible for final selection. We requested five DiCE scenarios per employee to retain some diversity while keeping cohort-wide computation bounded; this finite search was not exhaustive. A threshold adapter aligned the DiCE boundary with the research threshold, after which we recomputed candidate scores using the unmodified model. We defined a scenario as model-valid only when its recomputed score was strictly below the threshold.
+
+At Level 3, MonthlyIncome could increase by 0\%, 5\%, 10\%, 15\%, 20\%, 25\%, or 30\%, subject to a salary cap. We predeclared this grid as a bounded stress test: five-percentage-point steps give interpretable changes, while the 30\% upper bound prevents an unbounded search and does not represent a compensation recommendation. StockOptionLevel could remain unchanged or increase to the training maximum. OverTime could change only from Yes to No. The Cartesian product included single- and multi-lever scenarios; we removed unchanged and duplicate profiles.
+
+\subsection{Feasibility Rules and Scenario Ranking}
+We defined the primary salary cap as the training-set 75th percentile among employees with the same JobRole and JobLevel, using it as a moderate upper benchmark rather than a universal HR standard. To avoid estimating a role-level cap from a very small reference group, groups with fewer than ten observations fell back to JobLevel and then the full training sample. A cap was never below current income. Sensitivity analyses at the 60th and 90th percentiles tested dependence on this assumption.
+
+Each model-valid scenario was audited for immutable or historical changes, perception variables treated as actions, out-of-scope job changes, salary decreases or cap violations, stock-option decreases or range violations, invalid overtime direction, out-of-domain values, and tenure contradictions. A Level 3 scenario was HR-feasible only if model-valid, limited to the three levers, and free of violations.
+
+Feasible scenarios were ranked by: fewer changed features; no salary increase before an increase; smaller stock-option increments; smaller salary increases; and greater score reduction. Thus best-scenario frequencies reflect the ranking policy, not only model sensitivity.
+
+Each high-risk employee was assigned to \emph{actionable}, \emph{model-valid but not HR-feasible}, or \emph{no model recourse within search}. Technical failures were recorded separately.
+
+\subsection{Sensitivity and Stability Analysis}
+We repeated the workflow for stratified split seeds 17 and 73 as two additional fixed replicates, providing a limited stability check rather than exhaustive resampling. One-factor-at-a-time analyses changed the threshold by $\pm0.05$ and $\pm0.10$, the salary-cap percentile to 60, 75, or 90, and overtime from allowed to locked. At each threshold, we re-evaluated the cohort and all three levels. Threshold sensitivity therefore changes both cohort composition and the score boundary a scenario must cross; it is not a fixed-cohort causal effect of threshold choice. Salary-cap and overtime analyses retained the primary cohort and reran Level 3.
+
+\section{Results}
+\subsection{Model Selection and Test Performance}
+Table~\ref{tab:modelcomparison} reports validation performance. Logistic regression obtained the highest AP (0.573), narrowly exceeding XGBoost (0.561); random forest obtained 0.481. Logistic regression was selected without consulting test performance.
+
+\begin{table}[htbp]
+\centering
+\caption{Candidate-model validation performance. Threshold-dependent metrics use each model's F2-optimal validation threshold.}
+\label{tab:modelcomparison}
+\small
+\begin{tabular}{lrrrrrr}
+\toprule
+Model & AP & Threshold & Precision & Recall & F1 & F2 \\
+\midrule
+Logistic regression & \textbf{0.573} & 0.37 & 0.353 & 0.854 & 0.500 & 0.666 \\
+Random forest & 0.481 & 0.21 & 0.343 & 0.750 & 0.471 & 0.606 \\
+XGBoost & 0.561 & 0.27 & 0.349 & 0.792 & 0.484 & 0.631 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\FloatBarrier
+
+On test data, the selected model achieved AP 0.587. At threshold 0.37, precision was 0.316, recall 0.787, F1 0.451, and F2 0.607. The confusion matrix contained 167 true negatives, 80 false positives, 10 false negatives, and 37 true positives. Thus 117 of 294 test employees were high-risk. The threshold captured 37 of the 47 employees who actually left and missed 10; 80 of the 117 flagged employees stayed.
+
+\begin{figure}[htbp]
+\centering
+\begin{minipage}[t]{0.49\textwidth}
+  \centering\includegraphics[width=\linewidth]{precision_recall_curve.png}
+  \caption*{(a) Test precision--recall curve.}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.43\textwidth}
+  \centering\includegraphics[width=\linewidth]{confusion_matrix.png}
+  \caption*{(b) Confusion matrix at threshold 0.37.}
+\end{minipage}
+\caption{Held-out test performance of the selected logistic-regression model ($n=294$); the confusion matrix uses the validation-selected threshold of 0.37.}
+\label{fig:modelperformance}
+\end{figure}
+
+\FloatBarrier
+
+\subsection{Model Explanation Results}
+JobRole was the most influential original feature by mean absolute SHAP value (1.201 log-odds units), followed by OverTime (0.723), JobLevel (0.543), MonthlyIncome (0.484), BusinessTravel (0.478), and MaritalStatus (0.475). At group level, job structure/context had the largest total attribution mass (3.043), followed by historical variables (2.183), directly actionable variables (1.529), perception/experience variables (1.284), and immutable variables (0.888). Because these totals are sums over groups of unequal size, they describe where the model's attribution mass accumulated, not average importance per variable.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.76\textwidth]{shap_group_importance.png}
+\caption{Global mean absolute SHAP importance for the 294 test employees, aggregated into HR groups. Values are group sums and summarize model reliance rather than causal effects.}
+\label{fig:shapgroups}
+\end{figure}
+
+\FloatBarrier
+
+Most total attribution mass lay outside the direct intervention space, while directly actionable features represented the third-largest group total.
+
+\subsection{Counterfactual Feasibility and Employee-Level Assessment}
+DiCE found a model-valid scenario for all 117 high-risk employees at Levels 1 and 2. The Level 3 grid evaluated 2,681 unique scenarios. Of these, 999 were model-valid and HR-feasible, covering 73 employees.
+
+\begin{table}[htbp]
+\centering
+\caption{Counterfactual found rates and final groups for the 117 high-risk employees in the primary test cohort.}
+\label{tab:recourse}
+\begin{tabular}{lrrr}
+\toprule
+Result & Employees & Denominator & Rate \\
+\midrule
+Model-valid scenario at Level 1 & 117 & 117 & 100.0\% \\
+Model-valid scenario at Level 2 & 117 & 117 & 100.0\% \\
+Model-valid and feasible scenario at Level 3 & 73 & 117 & 62.4\% \\
+\midrule
+Final group: actionable & 73 & 117 & 62.4\% \\
+Final group: model-valid, not HR-feasible & 44 & 117 & 37.6\% \\
+Final group: no model recourse within search & 0 & 117 & 0.0\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\FloatBarrier
+
+All 117 high-risk employees completed all three analysis levels; there were no skipped or failed employee-level analyses in the primary run. Because the Level 3 grid enumerated only profiles that satisfied the declared direction, range, and scope constraints, every model-valid Level 3 scenario also passed the encoded feasibility audit.
+
+Table~\ref{tab:assessmentexamples} makes the study's principal employee-level output concrete. The two employees were selected mechanically as the cases closest to the median attrition score of their observed final groups, rather than chosen for unusually favorable results. Employee 144 had a feasible Level 3 scenario, whereas Employee 269 had diagnostic model recourse but no scenario within the constrained intervention grid.
+
+\begin{table}[htbp]
+\centering
+\caption{Representative rows from the employee-level intervention-feasibility assessment.}
+\label{tab:assessmentexamples}
+\small
+\begin{tabularx}{\textwidth}{lrr>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}p{3.0cm}}
+\toprule
+Employee & Score before & Score after & Best Level 3 scenario or reason none was found & Final group \\
+\midrule
+144 & 0.605 & 0.283 & Increase StockOptionLevel from 0 to 3; no salary or overtime change & Actionable \\
+269 & 0.844 & -- & No feasible Level 3 scenario; diagnostic scenarios violated scope, history, perception-as-action, salary-cap, or tenure-consistency rules & Model-valid, not HR-feasible \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\FloatBarrier
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=0.68\textwidth]{counterfactual_found_rate.png}
+\caption{Proportion of the 117 high-risk employees with at least one model-valid scenario at each constraint level. Only Level 3 was eligible for feasible selection.}
+\label{fig:foundrate}
+\end{figure}
+
+\FloatBarrier
+
+The 44 non-actionable employees had a greater mean score than actionable employees (0.810 versus 0.626) and a greater observed test attrition rate (43.2\% versus 24.7\%). Only 20.5\% of the non-actionable group originally worked overtime, compared with 61.6\% of the actionable group. Median income and stock-option level were similar. An employee already recorded as not working overtime could not benefit from the permitted Yes-to-No change.
+
+Among all 999 feasible Level 3 scenarios, 84.6\% included a stock-option change, 79.9\% included income, and 65.8\% included overtime. Because scenarios can combine levers, shares do not sum to 100\%. The 73 selected best scenarios differed: overtime appeared in 61.6\%, stock options in 58.9\%, and income in 2.7\%. Fifty-seven best scenarios changed one feature, 15 changed two, and one changed all three. Income appeared in only two selected scenarios under the predeclared ranking, which avoided a salary increase whenever a lower-ranked change already crossed the model threshold.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.78\textwidth]{hr_lever_contribution.png}
+\caption{Lever occurrence among all 999 feasible Level 3 scenarios and the 73 employee-level scenarios selected by the ranking rule.}
+\label{fig:levers}
+\end{figure}
+
+\FloatBarrier
+
+The largest substantive rejection counts among model-valid diagnostic scenarios were out-of-scope job-structure changes (663 occurrences), salary-cap violations (331), historical changes (303), perception variables treated as actions (269), tenure contradictions (110), and immutable changes (77). Counts are violation occurrences; one scenario may contribute multiple violations. The structural rule that Levels 1 and 2 are diagnostic-only was excluded from this decomposition so that it would not obscure the substantive reasons.
+
+\subsection{Sensitivity and Stability Results}
+As the threshold increased from 0.27 to 0.47, the cohort shrank from 144 to 98 employees and the actionable rate increased from 58.3\% to 77.6\%. This pattern combines a changing employee cohort with a less demanding score boundary for some scenarios and should not be interpreted as a within-employee threshold effect. All threshold runs completed, and every non-actionable case still had diagnostic model recourse.
+
+\begin{table}[htbp]
+\centering
+\caption{One-factor-at-a-time sensitivity results.}
+\label{tab:sensitivity}
+\small
+\begin{tabular}{llrrr}
+\toprule
+Assumption & Value & High-risk & Actionable & Feasibility \\
+\midrule
+Risk threshold & 0.27 & 144 & 84 & 58.3\% \\
+ & 0.32 & 128 & 75 & 58.6\% \\
+ & 0.37 & 117 & 73 & 62.4\% \\
+ & 0.42 & 107 & 76 & 71.0\% \\
+ & 0.47 & 98 & 76 & 77.6\% \\
+\midrule
+Salary-cap percentile & 60 & 117 & 73 & 62.4\% \\
+ & 75 & 117 & 73 & 62.4\% \\
+ & 90 & 117 & 75 & 64.1\% \\
+\midrule
+Overtime policy & Allowed & 117 & 73 & 62.4\% \\
+ & Locked & 117 & 42 & 35.9\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\FloatBarrier
+
+Changing the salary-cap percentile from 60 to 90 changed feasibility from 62.4\% to 64.1\%. Prohibiting overtime changes reduced feasibility by 26.5 percentage points, from 62.4\% to 35.9\%.
+
+Across split seeds, feasibility was 62.4\%, 55.7\%, and 68.7\% for seeds 42, 17, and 73. Logistic regression, XGBoost, and random forest were selected, respectively. All 363 high-risk employee analyses across the three split runs completed.
+
+\begin{figure}[htbp]
+\centering
+\begin{minipage}[t]{0.49\textwidth}
+  \centering\includegraphics[width=\linewidth]{sensitivity_overtime.png}
+  \caption*{(a) Overtime-policy sensitivity.}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.49\textwidth}
+  \centering\includegraphics[width=\linewidth]{stability_by_seed.png}
+  \caption*{(b) Split stability.}
+\end{minipage}
+\caption{Level 3 feasibility under overtime-policy sensitivity for the fixed primary cohort ($n=117$) and across three stratified split seeds (363 high-risk employee analyses in total).}
+\label{fig:robustness}
+\end{figure}
+
+\FloatBarrier
+
+\section{Discussion}
+\subsection{Findings by Research Question}
+To answer RQ1, the finite Level 1 and Level 2 DiCE searches found at least one model-valid scenario for every high-risk employee in the primary cohort. The answer is therefore affirmative within those diagnostic search spaces, but it does not establish that realistic recourse exists or that DiCE would find every possible scenario outside its finite search.
+
+To answer RQ2, 73 of 117 high-risk employees (62.4\%) had at least one model-valid scenario within the Level 3 grid, while 44 (37.6\%) had diagnostic model recourse but no feasible scenario in that bounded intervention space. The 37.6-percentage-point loss from diagnostic recourse to rule-based feasibility is the study's central empirical finding. Rejection patterns explain the difference: loose scenarios frequently changed job structure, exceeded salary caps, altered historical or perception variables, or violated tenure consistency. Global SHAP results were consistent with this pattern because job-structure and historical groups accumulated more attribution mass than the directly actionable group. Model validity and feature importance therefore did not substitute for an explicit feasibility audit. Moreover, because the Level 3 grid generated only profiles that already satisfied the encoded rules, ``HR-feasible'' here means feasible under those rules, not approved under an organization's budget, equity, eligibility, legal, or workforce constraints.
+
+To answer RQ3, the exact feasibility rate depended on both analytical and operational assumptions. Increasing the threshold changed the cohort and raised the observed rate from 58.3\% to 77.6\%; this was not a within-employee effect. Changing the salary-cap percentile had little effect (62.4\%--64.1\%), whereas locking overtime reduced feasibility to 35.9\%. Across split seeds, feasibility ranged from 55.7\% to 68.7\%, and a different model was selected for each split. The qualitative conclusion---that bounded HR feasibility was narrower than diagnostic recourse---persisted, but the selected model, cohort, and exact coverage were not stable enough to treat 62.4\% as a universal rate.
+
+\subsection{Comparison with Prior Work}
+Artelt and Gregoriades showed that diverse, constrained counterfactuals can support retention-oriented analysis in employee attrition \cite{artelt2023}. The present results reinforce the need for such constraints but shift the emphasis from producing recommendations to quantifying how much apparent recourse survives a predeclared audit. The employee-level assessment, rejection codes, and technical-failure semantics make coverage loss visible rather than presenting only successful examples.
+
+Lv et al. likewise combine employee-turnover prediction with mutability-constrained counterfactuals and sensitivity analysis \cite{lv2026}. The strong overtime sensitivity observed here supports their broader premise that recourse depends on domain assumptions. This study differs in scope: it does not generate natural-language retention strategies, but exhaustively evaluates a small HR grid and reports which employees remain without feasible recourse under that grid.
+
+More generally, the gap between 100\% diagnostic recourse and 62.4\% rule-based feasibility is consistent with actionable-recourse research arguing that a favorable model outcome is not sufficient for a useful action \cite{ustun2019,poyiadzi2020,karimi2022}. It also accords with human-centered evidence that conventional recourse objectives may not reflect what people consider acceptable \cite{tominaga2024}. The directional rules used here operationalize the same type of domain knowledge emphasized by Thieu \cite{thieu2026}, while the coverage audit shows the consequence of applying that knowledge to an employee-level cohort.
+
+\subsection{Operational Implications}
+Predictive performance constrains any operational use. Test precision was 31.6\%, so approximately 32 of every 100 flagged employees were observed leavers in this split; recall of 78.7\% means that approximately 79 of every 100 observed leavers were captured. The F2-oriented threshold therefore created a broader review queue with many false alarms in exchange for missing fewer potential leavers. The score is better treated as an uncertain early-warning signal for voluntary follow-up than as a forecast that a flagged individual will resign.
+
+SHAP and counterfactual outputs play complementary roles. The model associated risk strongly with role, level, travel, overtime, and historical variables, but those associations do not explain why an employee left. A JobRole signal, for example, may reflect workload, labor-market demand, management practices, or advancement opportunities that the dataset does not distinguish. For the 73 employees with Level 3 recourse, pay, stock options, and overtime are therefore topics to validate through organizational context and employee conversation, not automatically prescribed actions. For the other 44, the three encoded levers were insufficient and broader qualitative diagnosis would be required.
+
+The overtime result is operationally important but not causal. Removing overtime changes reduced the feasible cohort from 73 to 42, so an organization without staffing or scheduling flexibility would obtain substantially less apparent recourse. A real review would still need to determine whether overtime is temporary or chronic, voluntary or imposed, and whether reducing it transfers work to colleagues. StockOptionLevel similarly represented an ordinal model input; actual eligibility, vesting, budget, perceived value, and compensation governance were not observed.
+
+Best scenarios also reflect an explicit ranking policy. Salary appeared in only two selected scenarios but in approximately 80\% of all feasible scenarios because the rule preferred no salary increase after minimizing the number of changes. These frequencies describe a cost-prioritized selection rule, not comparative causal effectiveness or evidence that salary is intrinsically unimportant.
+
+\subsection{Illustrative Employee Cases}
+The two cases in Table~\ref{tab:assessmentexamples} were selected mechanically as the employees closest to the median score of their observed final groups. Employee 144 represented the actionable group. Its initial score was 0.605; increasing StockOptionLevel from 0 to 3 reduced the score to 0.283 without changing salary or overtime. In a real review, this result would mean ``assess whether a stronger long-term incentive is eligible, affordable, equitable, and valued by this employee,'' not ``grant level 3 and the employee will stay.'' Its largest signed local SHAP contributions included JobRole (+1.186), TotalWorkingYears (+0.683), JobLevel ($-0.657$), MaritalStatus (+0.538), and OverTime ($-0.494$). These values explain model logic, not actions or causes.
+
+Employee 269 represented the model-valid but not HR-feasible group. Its initial score was 0.844. DiCE found diagnostic score-reducing scenarios, but they relied on changes outside the main scope or violated job-structure, historical, perception-as-action, logical-tenure, or salary-cap rules. This case would require qualitative diagnosis rather than a mechanically generated offer: the relevant concern may involve travel burden, role design, advancement, management, or another factor absent from the intervention grid. Its largest local contributions included JobRole (+1.186), BusinessTravel (+0.760), MaritalStatus (+0.538), OverTime ($-0.494$), and NumCompaniesWorked (+0.406). No third-group case was selected because that group was absent in the primary run.
+
+Taken together, the findings support a two-stage business process. HR can first use the score to prioritize attention while accepting that a flag is uncertain. Managers and HR partners can then validate the employee's situation through conversation and operational data. Any intervention should be offered consistently, checked for fairness and budget impact, and evaluated using subsequent retention outcomes rather than assumed effective because it reduced a model score.
+
+\section{Limitations and Responsible Use}
+First, the IBM dataset is synthetic and cross-sectional and has no observed intervention outcomes. The analysis cannot show that compensation, stock options, or overtime changes would cause an employee to stay. A model-valid scenario changes a score, not behavior.
+
+Second, feasibility is narrow and rule-based. The audit covers direction, range, immutability, scope, and simple consistency but cannot represent budgets, law, equity, role eligibility, organizational policy, team dependencies, or employee preferences. Here, feasible means feasible under encoded study rules, not approved for implementation.
+
+Third, test data contained only 47 positive cases, and results are point estimates without confidence intervals. Three seeds are a limited stability check, not external validation. Model selection also changed across seeds, showing model and split dependence. Aggregated SHAP group totals are additionally sensitive to the number and encoding of features assigned to each group.
+
+Fourth, age, gender, and marital status were predictors although locked during recourse. Their inclusion can affect who is classified high-risk and raises fairness concerns. This study does not perform a complete subgroup-fairness audit. Real HR use requires protected-attribute review, subgroup performance analysis, privacy safeguards, legal assessment, and human oversight \cite{kochling2020,tambe2019}.
+
+Finally, DiCE used finite random search with five scenarios per employee and diagnostic level. Failure to find a scenario would not prove none exists outside that search. Level 3 is exhaustive only within its predefined grid and salary policy.
+
+\section{Conclusion}
+This study implemented an end-to-end framework combining leakage-controlled predictive modeling, validation-based threshold selection, SHAP explanation, multi-level counterfactual generation, explicit feasibility auditing, and employee-level scenario ranking.
+
+The primary model identified 117 high-risk employees, capturing 37 of the 47 observed leavers but also flagging 80 employees who stayed. Although broad and intermediate searches found model-valid recourse for all, only 73 had recourse in the constrained intervention space. A model's ability to generate a favorable counterfactual was therefore not equivalent to organizational actionability. Feasibility was relatively insensitive to salary-cap percentile but strongly dependent on overtime availability. In managerial terms, the system is most useful as a transparent triage tool: it highlights whom to speak with and which work or reward conditions to examine, while leaving diagnosis and intervention decisions to people with organizational and employee context.
+
+The framework's value is transparency: it records whether recourse exists, whether it passes rules, which scenario is selected, and why alternatives are rejected. Its output should audit model behavior, not prescribe compensation or employment decisions. Future work should use longitudinal organizational data, domain-expert and employee-informed constraints, uncertainty quantification, and formal fairness and causal analysis.
+
+\section*{Reproducibility Statement}
+Using the pinned environment in \texttt{requirements-lock.txt}, the documented macOS OpenMP setup where applicable, and the verified raw CSV at the path specified in \texttt{config.yaml}, running \texttt{python3 run\_pipeline.py} from the project root regenerates the primary tables, scenarios, model artifact, figures, split stability, and sensitivity analyses in the verified environment. The README records the verified Python version, data source, expected filename, SHA-256 checksum, and the possibility of cross-platform variation in stochastic components. The principal result is stored at \path{outputs/tables/hr_intervention_feasibility_assessment.csv}. The primary seed is 42; supplementary seeds are 17 and 73. Automated tests cover split separation, train-only preprocessing behavior, feature exclusions, threshold tie-breaking, Level 3 constraints, ranking, group assignment, skipped-analysis semantics, real DiCE and SHAP integrations, and an end-to-end smoke run.
+
+\begin{thebibliography}{99}
+\bibitem{artelt2023}
+A. Artelt and A. Gregoriades, \emph{How to Make Them Stay?: Diverse Counterfactual Explanations of Employee Attrition}, Proceedings of the 25th International Conference on Enterprise Information Systems, vol. 1, pp. 532--538, 2023. doi: \href{https://doi.org/10.5220/0011961300003467}{10.5220/0011961300003467}.
+
+\bibitem{mohiuddin2023}
+K. Mohiuddin, M. A. Alam, M. M. Alam, P. Welke, M. Martin, J. Lehmann, and S. Vahdati, \emph{Retention Is All You Need}, Proceedings of the 32nd ACM International Conference on Information and Knowledge Management, 2023. doi: \href{https://doi.org/10.1145/3583780.3615497}{10.1145/3583780.3615497}.
+
+\bibitem{karimi2022}
+A. H. Karimi, G. Barthe, B. Sch{\"o}lkopf, and I. Valera, \emph{A Survey of Algorithmic Recourse: Contrastive Explanations and Consequential Recommendations}, ACM Computing Surveys, 2022. doi: \href{https://doi.org/10.1145/3527848}{10.1145/3527848}.
+
+\bibitem{mothilal2020}
+R. K. Mothilal, A. Sharma, and C. Tan, \emph{Explaining Machine Learning Classifiers through Diverse Counterfactual Explanations}, Proceedings of the 2020 Conference on Fairness, Accountability, and Transparency, 2020. doi: \href{https://doi.org/10.1145/3351095.3372850}{10.1145/3351095.3372850}.
+
+\bibitem{poyiadzi2020}
+R. Poyiadzi, K. Sokol, R. Santos-Rodriguez, T. De Bie, and P. Flach, \emph{FACE: Feasible and Actionable Counterfactual Explanations}, Proceedings of the AAAI/ACM Conference on AI, Ethics, and Society, 2020. doi: \href{https://doi.org/10.1145/3375627.3375850}{10.1145/3375627.3375850}.
+
+\bibitem{kochling2020}
+A. K{\"o}chling and M. C. Wehner, \emph{Discriminated by an Algorithm: A Systematic Review of Discrimination and Fairness by Algorithmic Decision-Making in the Context of HR Recruitment and HR Development}, Business Research, vol. 13, pp. 795--848, 2020. doi: \href{https://doi.org/10.1007/s40685-020-00134-w}{10.1007/s40685-020-00134-w}.
+
+\bibitem{ustun2019}
+B. Ustun, A. Spangher, and Y. Liu, \emph{Actionable Recourse in Linear Classification}, Proceedings of the Conference on Fairness, Accountability, and Transparency, 2019. doi: \href{https://doi.org/10.1145/3287560.3287566}{10.1145/3287560.3287566}.
+
+\bibitem{tambe2019}
+P. Tambe, P. Cappelli, and V. Yakubovich, \emph{Artificial Intelligence in Human Resources Management: Challenges and a Path Forward}, California Management Review, vol. 61, no. 4, pp. 15--42, 2019. doi: \href{https://doi.org/10.1177/0008125619867910}{10.1177/0008125619867910}.
+
+\bibitem{lundberg2017}
+S. M. Lundberg and S.-I. Lee, \emph{A Unified Approach to Interpreting Model Predictions}, Advances in Neural Information Processing Systems, 2017. \url{https://arxiv.org/abs/1705.07874}.
+
+\bibitem{saito2015}
+T. Saito and M. Rehmsmeier, \emph{The Precision--Recall Plot Is More Informative than the ROC Plot When Evaluating Binary Classifiers on Imbalanced Datasets}, PLOS ONE, vol. 10, no. 3, 2015. doi: \href{https://doi.org/10.1371/journal.pone.0118432}{10.1371/journal.pone.0118432}.
+
+\bibitem{ibmdata}
+IBM, \emph{IBM HR Analytics Employee Attrition and Performance Dataset}, Kaggle. \url{https://www.kaggle.com/datasets/pavansubhasht/ibm-hr-analytics-attrition-dataset}.
+
+\bibitem{tominaga2024}
+T. Tominaga, N. Yamashita, and T. Kurashima, \emph{Reassessing Evaluation Functions in Algorithmic Recourse: An Empirical Study from a Human-Centered Perspective}, Proceedings of the Thirty-Third International Joint Conference on Artificial Intelligence, pp. 7913--7921, 2024. doi: \href{https://doi.org/10.24963/ijcai.2024/876}{10.24963/ijcai.2024/876}.
+
+\bibitem{thieu2026}
+V. Thieu, \emph{Knowledge-Guided Counterfactual Explanations for Diabetes Risk Decision Support: A Directional Intervention Taxonomy}, International Journal of Medical Informatics, vol. 219, article 106555, 2026. doi: \href{https://doi.org/10.1016/j.ijmedinf.2026.106555}{10.1016/j.ijmedinf.2026.106555}.
+
+\bibitem{lv2026}
+C. Lv, Y. Chen, H. Li, and Y. Dong, \emph{A Decision-Oriented Approach for Employee Turnover Prediction with Counterfactual Explanations}, Expert Systems with Applications, article 133494, advance online publication, 2026. doi: \href{https://doi.org/10.1016/j.eswa.2026.133494}{10.1016/j.eswa.2026.133494}.
+\end{thebibliography}
+
+\end{document}
